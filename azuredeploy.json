@@ -1,0 +1,207 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "GoDaddyKey": {
+            "type": "string"
+        },
+        "GoDaddySecret": {
+            "type": "string"
+        },
+        "storageAccountType": {
+            "type": "string",
+            "defaultValue": "Standard_LRS",
+            "allowedValues": [
+                "Standard_LRS",
+                "Standard_GRS",
+                "Standard_ZRS"
+            ],
+            "metadata": {
+                "description": "Storage Account type"
+            }
+        },
+        "storageAccountPrefix": {
+            "type": "string",
+            "defaultValue": "certbotsa",
+            "metadata": {
+                "description": "Storage Account Name Prefix"
+            }
+        },
+        "containerGroupPrefix": {
+            "type": "string",
+            "defaultValue": "certbotaci"
+        }
+    },
+    "variables": {
+        "azureCliImage": "microsoft/azure-cli",
+        "storageAccountName": "[concat(parameters('storageAccountPrefix'), uniqueString(resourceGroup().id, deployment().name))]",
+        "containerGroupName": "[concat(parameters('containerGroupPrefix'), uniqueString(resourceGroup().id, deployment().name))]"
+    },
+    "resources": [
+        {
+            "type": "Microsoft.Storage/storageAccounts",
+            "name": "[variables('storageAccountName')]",
+            "apiVersion": "2017-10-01",
+            "location": "[resourceGroup().location]",
+            "sku": {
+                "name": "[parameters('storageAccountType')]"
+            },
+            "kind": "Storage",
+            "properties": {}
+        },
+        {
+            "name": "LetsEncryptShare",
+            "type": "Microsoft.ContainerInstance/containerGroups",
+            "apiVersion": "2018-02-01-preview",
+            "location": "[resourceGroup().location]",
+            "dependsOn": [
+                "[concat('Microsoft.Storage/storageAccounts/', variables('storageAccountName'))]"
+            ],
+            "properties": {
+                "containers": [
+                    {
+                        "name": "etcshare",
+                        "properties": {
+                            "image": "[variables('azureCliImage')]",
+                            "command": [
+                                "az",
+                                "storage",
+                                "share",
+                                "create",
+                                "--name",
+                                "etc-letsencrypt"
+                            ],
+                            "environmentVariables": [
+                                {
+                                    "name": "AZURE_STORAGE_KEY",
+                                    "value": "[listKeys(variables('storageAccountName'),'2017-10-01').keys[0].value]"
+                                },
+                                {
+                                    "name": "AZURE_STORAGE_ACCOUNT",
+                                    "value": "[variables('storageAccountName')]"
+                                }
+                            ],
+                            "resources": {
+                                "requests": {
+                                    "cpu": "1",
+                                    "memoryInGb": "2"
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "name": "varlibshare",
+                        "properties": {
+                            "image": "[variables('azureCliImage')]",
+                            "command": [
+                                "az",
+                                "storage",
+                                "share",
+                                "create",
+                                "--name",
+                                "var-lib-letsencrypt"
+                            ],
+                            "environmentVariables": [
+                                {
+                                    "name": "AZURE_STORAGE_KEY",
+                                    "value": "[listKeys(variables('storageAccountName'),'2017-10-01').keys[0].value]"
+                                },
+                                {
+                                    "name": "AZURE_STORAGE_ACCOUNT",
+                                    "value": "[variables('storageAccountName')]"
+                                }
+                            ],
+                            "resources": {
+                                "requests": {
+                                    "cpu": "1",
+                                    "memoryInGb": "2"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "restartPolicy": "OnFailure",
+                "osType": "Linux"
+            }
+        },
+        {
+            "name": "[variables('containerGroupName')]",
+            "type": "Microsoft.ContainerInstance/containerGroups",
+            "dependsOn": [
+                "[concat('Microsoft.ContainerInstance/containerGroups/', 'LetsEncryptShare')]"
+            ],
+            "apiVersion": "2018-04-01",
+            "location": "[resourceGroup().location]",
+            "properties": {
+                "containers": [
+                    {
+                        "name": "certbot",
+                        "properties": {
+                            "image": "hansenms/certbot:2",
+                            "command": [
+                                "certbot",
+                                "certonly",
+                                "--server", "https://acme-v02.api.letsencrypt.org/directory",
+                                "--manual-auth-hook", "/opt/certbot/go_daddy_dns_authenticator.sh",
+                                "--manual", 
+                                "--preferred-challenges", "dns",
+                                "--non-interactive",
+                                "--manual-public-ip-logging-ok",
+                                "--agree-tos",
+                                "-m", "mihansen@microsoft.com",
+                                "-d", "*.cloudynerd.us", 
+                                "-d", "*.scm.cloudynerd.us"
+                            ],
+                            "environmentVariables": [
+                                {
+                                    "name": "godaddykey",
+                                    "value": "[parameters('GoDaddyKey')]"
+                                },
+                                {
+                                    "name": "godaddysecret",
+                                    "value": "[parameters('GoDaddySecret')]"
+                                }
+                            ],
+                            "volumeMounts": [
+                                {
+                                    "mountPath": "/var/lib/letsencrypt",
+                                    "name": "varlib"
+                                },
+                                {
+                                    "mountPath": "/etc/letsencrypt",
+                                    "name": "etc"
+                                }
+                            ],
+                            "resources": {
+                                "requests": {
+                                    "memoryInGB": "4",
+                                    "cpu": "1"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "restartPolicy": "OnFailure",
+                "volumes": [
+                    {
+                        "azureFile": {
+                            "shareName": "etc-letsencrypt",
+                            "storageAccountKey": "[listKeys(variables('storageAccountName'),'2017-10-01').keys[0].value]",
+                            "storageAccountName": "[variables('storageAccountName')]"
+                        },
+                        "name": "etc"
+                    },
+                    {
+                        "azureFile": {
+                            "shareName": "var-lib-letsencrypt",
+                            "storageAccountKey": "[listKeys(variables('storageAccountName'),'2017-10-01').keys[0].value]",
+                            "storageAccountName": "[variables('storageAccountName')]"
+                        },
+                        "name": "varlib"
+                    }
+                ],
+                "osType": "linux"
+            }
+        }
+    ]
+}

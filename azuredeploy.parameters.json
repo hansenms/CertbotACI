@@ -1,0 +1,8 @@
+{
+    "GoDaddyKey":  {
+        "value":  "KEY-VALUE"
+    },
+    "GoDaddySecret":  {
+        "value":  "SECRET-VALUE"
+    }
+}
